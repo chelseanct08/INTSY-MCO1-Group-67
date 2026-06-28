@@ -35,6 +35,7 @@ public class SokoBot {
     }
 
     State startState = new State(playerPos, posCrates, 0, 0, null, "", mapData, itemsData);
+        computeReachableParents(startState);
     State goalState = aStarSearch(startState);
     return constructPath(goalState);
   }
@@ -134,16 +135,10 @@ public class SokoBot {
             return 0;
         }
 
-        int rows = mapData.length;
-        int cols = mapData[0].length;
-
-        // Use precomputed BFS distance maps per goal when available
+        // Use precomputed BFS distance maps per goal.
         List<int[][]> goalDists = goalDistanceMaps;
         if (goalDists == null || goalDists.size() != posGoals.size()) {
-            goalDists = new ArrayList<>();
-            for (int[] goal : posGoals) {
-                goalDists.add(bfsDistanceMap(goal[0], goal[1], rows, cols));
-            }
+            return 0;
         }
 
         boolean[] assignedGoals = new boolean[posGoals.size()];
@@ -216,10 +211,11 @@ public class SokoBot {
     }
 
     private String createStateKey(State state) {
-        int[] playerPosition = state.getPlayerCoordinates();
+        int[] canon = state.getCanonicalPlayerCoordinates();
+        int[] playerPosition = canon != null ? canon : state.getPlayerCoordinates();
         ArrayList<int[]> crates = state.getCrateCoordinates();
-        ArrayList<String> cratePositions = new ArrayList<>();
 
+        ArrayList<String> cratePositions = new ArrayList<>();
         for (int[] crate : crates) {
             cratePositions.add(crate[0] + "," + crate[1]);
         }
@@ -246,7 +242,7 @@ public class SokoBot {
 
     public List<State> getPossibleMoves(State currentState) {
         List<State> nextStates = new ArrayList<>();
-        int[][] parentDir = computeReachableParents(currentState.getPlayerCoordinates(), currentState.getCrateCoordinates());
+        int[][] parentDir = computeReachableParents(currentState);
         if (parentDir == null) {
             return nextStates;
         }
@@ -299,11 +295,12 @@ public class SokoBot {
                     }
                 }
 
-                int newGCost = currentState.getPathCost() + moveSequence.length();
+                // push-based cost: each crate push costs 1 (walking steps not counted in g)
+                int newGCost = currentState.getPathCost() + 1;
                 int newHCost = computeHeuristic(newCrates, goalPositions);
                 int[] newPlayerPos = new int[]{crateX, crateY};
                 State nextState = new State(newPlayerPos, newCrates, newGCost, newHCost, currentState, moveSequence, mapData, itemsData);
-
+                computeReachableParents(nextState);
                 nextStates.add(nextState);
             }
         }
@@ -373,6 +370,28 @@ public class SokoBot {
             }
         }
 
+        return parentDir;
+    }
+
+    private int[][] computeReachableParents(State state) {
+        int[][] parentDir = computeReachableParents(state.getPlayerCoordinates(), state.getCrateCoordinates());
+        if (parentDir == null) {
+            return null;
+        }
+
+        int[] canonicalPlayer = state.getPlayerCoordinates();
+        for (int i = 0; i < parentDir.length; i++) {
+            for (int j = 0; j < parentDir[0].length; j++) {
+                if (parentDir[i][j] != -1) {
+                    if (canonicalPlayer == null
+                            || i < canonicalPlayer[0]
+                            || (i == canonicalPlayer[0] && j < canonicalPlayer[1])) {
+                        canonicalPlayer = new int[]{i, j};
+                    }
+                }
+            }
+        }
+        state.setCanonicalPlayerCoordinates(canonicalPlayer);
         return parentDir;
     }
 

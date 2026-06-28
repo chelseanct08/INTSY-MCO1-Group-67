@@ -9,26 +9,39 @@ public class State {
     private int pathCost;
     private int heuristicCost;
     private State previousState;
+    private String moveSequence;
+    private int[] canonicalPlayerCoordinates;
     private final char[][] itemLayout;
     private final char[][] mapLayout;
 
     public State(char[][] mapData, char[][] itemsData) {
-        this(new int[2], new ArrayList<>(), 0, 0, null, mapData, itemsData);
+        this(new int[2], new ArrayList<>(), 0, 0, null, "", mapData, itemsData);
     }
 
     public State(int[] playerPosition, ArrayList<int[]> cratePositions, int gCost, int hCost,
-                 State parent, char[][] mapData, char[][] itemsData) {
+                 State parent, String moveSequence, int[] canonicalPlayerCoordinates, char[][] mapData, char[][] itemsData) {
         this.playerCoordinates = playerPosition;
         this.crateCoordinates = cratePositions;
         this.pathCost = gCost;
         this.heuristicCost = hCost;
         this.previousState = parent;
+        this.moveSequence = moveSequence;
+        this.canonicalPlayerCoordinates = canonicalPlayerCoordinates;
         this.itemLayout = itemsData;
         this.mapLayout = mapData;
     }
 
+    public State(int[] playerPosition, ArrayList<int[]> cratePositions, int gCost, int hCost,
+                 State parent, String moveSequence, char[][] mapData, char[][] itemsData) {
+        this(playerPosition, cratePositions, gCost, hCost, parent, moveSequence, null, mapData, itemsData);
+    }
+
     public int[] getPlayerCoordinates() {
         return playerCoordinates;
+    }
+
+    public int[] getCanonicalPlayerCoordinates() {
+        return canonicalPlayerCoordinates;
     }
 
     public ArrayList<int[]> getCrateCoordinates() {
@@ -79,6 +92,18 @@ public class State {
 
     public void setPreviousState(State previousState) {
         this.previousState = previousState;
+    }
+
+    public String getMoveSequence() {
+        return moveSequence;
+    }
+
+    public void setCanonicalPlayerCoordinates(int[] canonicalPlayerCoordinates) {
+        this.canonicalPlayerCoordinates = canonicalPlayerCoordinates;
+    }
+
+    public void setMoveSequence(String moveSequence) {
+        this.moveSequence = moveSequence;
     }
 
     public int[] getPlayerPosition() {
