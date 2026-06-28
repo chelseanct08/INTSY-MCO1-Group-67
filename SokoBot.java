@@ -1,11 +1,14 @@
 package solver;
 
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.Comparator;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.LinkedList;
 import java.util.List;
 import java.util.PriorityQueue;
+import java.util.Queue;
 
 public class SokoBot {
 
@@ -15,6 +18,14 @@ public class SokoBot {
     this.mapData = mapData;
     this.itemsData = itemsData;
     this.goalPositions = getGoalPosition(mapData);
+        // precompute goal distance maps for heuristic (BFS per goal)
+        int rows = mapData.length;
+        int cols = mapData[0].length;
+        goalDistanceMaps = new ArrayList<>();
+        for (int[] g : goalPositions) {
+            goalDistanceMaps.add(bfsDistanceMap(g[0], g[1], rows, cols));
+        }
+        computeDeadSquares();
 
     int[] playerPos = getPlayerPosition(itemsData);
     ArrayList<int[]> posCrates = getCratePosition(itemsData);
@@ -23,7 +34,7 @@ public class SokoBot {
       return "";
     }
 
-    State startState = new State(playerPos, posCrates, 0, 0, null, mapData, itemsData);
+    State startState = new State(playerPos, posCrates, 0, 0, null, "", mapData, itemsData);
     State goalState = aStarSearch(startState);
     return constructPath(goalState);
   }
@@ -65,61 +76,16 @@ public class SokoBot {
                     continue;
                 }
 
-                int tempGCost = current.getPathCost() + 1;
+                int tempGCost = neighbor.getPathCost();
                 Integer previousBest = bestGCosts.get(neighborKey);
                 if (previousBest != null && tempGCost >= previousBest) {
                     continue;
                 }
 
-                neighbor.setPathCost(tempGCost);
                 neighbor.setHeuristicCost(computeHeuristic(neighbor.getCrateCoordinates(), goalPositions));
                 neighbor.setPreviousState(current);
                 bestGCosts.put(neighborKey, tempGCost);
                 open.add(neighbor);
-            }
-        }
-        return null;
-    }
-
-    public State GBFS(State startState) {
-        PriorityQueue<State> open = new PriorityQueue<>(Comparator.comparingInt(State::getHeuristicCost));
-        HashSet<State> closed = new HashSet<>();
-        HashSet<State> openSet = new HashSet<>();
-
-        startState.setHeuristicCost(computeHeuristic(startState.getCrateCoordinates(), goalPositions));
-        open.add(startState);
-        openSet.add(startState);
-
-        while (!open.isEmpty()) {
-            // get the node with the lowest f cost in open list
-            State current = open.poll();
-            openSet.remove(current);
-            closed.add(current);
-
-            // path has been found
-            if (isGoalState(current)) {
-                return current;
-            }
-
-            // check all of its neighboring nodes
-            for (State neighbor : getPossibleMoves(current)) {
-                // State neighbor = applyMove(current, move, goalPositions);
-                if (neighbor == null) {
-                    continue;
-                }
-                if (isDeadlock(neighbor) || closed.contains(neighbor)) {
-                    continue; // skip to next neighbor
-                }
-
-                if (!openSet.contains(neighbor)) {
-                    neighbor.setHeuristicCost(computeHeuristic(neighbor.getCrateCoordinates(), goalPositions));
-                    neighbor.setPreviousState(current);
-
-                    if (!openSet.contains(neighbor)) {
-                        open.add(neighbor);
-                        openSet.add(neighbor);
-                    }
-                }
             }
         }
         return null;
@@ -168,6 +134,18 @@ public class SokoBot {
             return 0;
         }
 
+        int rows = mapData.length;
+        int cols = mapData[0].length;
+
+        // Use precomputed BFS distance maps per goal when available
+        List<int[][]> goalDists = goalDistanceMaps;
+        if (goalDists == null || goalDists.size() != posGoals.size()) {
+            goalDists = new ArrayList<>();
+            for (int[] goal : posGoals) {
+                goalDists.add(bfsDistanceMap(goal[0], goal[1], rows, cols));
+            }
+        }
+
         boolean[] assignedGoals = new boolean[posGoals.size()];
         int totalHeuristic = 0;
 
@@ -175,15 +153,12 @@ public class SokoBot {
             int bestDistance = Integer.MAX_VALUE;
             int bestGoalIndex = -1;
 
-            for (int i = 0; i < posGoals.size(); i++) {
-                if (assignedGoals[i]) {
-                    continue;
-                }
-
-                int[] goal = posGoals.get(i);
-                int distance = Math.abs(goal[0] - crate[0]) + Math.abs(goal[1] - crate[1]);
-                if (distance < bestDistance) {
-                    bestDistance = distance;
+            for (int i = 0; i < goalDists.size(); i++) {
+                if (assignedGoals[i]) continue;
+                int[][] dist = goalDists.get(i);
+                int d = dist[crate[0]][crate[1]];
+                if (d >= 0 && d < bestDistance) {
+                    bestDistance = d;
                     bestGoalIndex = i;
                 }
             }
@@ -192,17 +167,52 @@ public class SokoBot {
                 assignedGoals[bestGoalIndex] = true;
                 totalHeuristic += bestDistance;
             } else {
-                int fallbackDistance = Integer.MAX_VALUE;
-                for (int[] goal : posGoals) {
-                    int distance = Math.abs(goal[0] - crate[0]) + Math.abs(goal[1] - crate[1]);
-                    if (distance < fallbackDistance) {
-                        fallbackDistance = distance;
-                    }
+                // fallback: pick minimal reachable distance ignoring assignment
+                int fallback = Integer.MAX_VALUE;
+                for (int[][] dist : goalDists) {
+                    int d = dist[crate[0]][crate[1]];
+                    if (d >= 0 && d < fallback) fallback = d;
                 }
-                totalHeuristic += fallbackDistance;
+                if (fallback == Integer.MAX_VALUE) return Integer.MAX_VALUE / 4;
+                totalHeuristic += fallback;
             }
         }
         return totalHeuristic;
+    }
+
+    private int[][] bfsDistanceMap(int sx, int sy, int rows, int cols) {
+        int[][] dist = new int[rows][cols];
+        for (int i = 0; i < rows; i++) {
+            for (int j = 0; j < cols; j++) dist[i][j] = Integer.MAX_VALUE;
+        }
+
+        Queue<int[]> q = new LinkedList<>();
+        if (mapData[sx][sy] == '#') return dist; // unreachable goal (shouldn't happen)
+        dist[sx][sy] = 0;
+        q.add(new int[]{sx, sy});
+
+        int[] dx = {-1, 1, 0, 0};
+        int[] dy = {0, 0, -1, 1};
+
+        while (!q.isEmpty()) {
+            int[] cur = q.poll();
+            int cx = cur[0];
+            int cy = cur[1];
+            for (int k = 0; k < 4; k++) {
+                int nx = cx + dx[k];
+                int ny = cy + dy[k];
+                if (nx < 0 || nx >= rows || ny < 0 || ny >= cols) continue;
+                if (mapData[nx][ny] == '#') continue;
+                if (dist[nx][ny] > dist[cx][cy] + 1) {
+                    dist[nx][ny] = dist[cx][cy] + 1;
+                    q.add(new int[]{nx, ny});
+                }
+            }
+        }
+
+        // convert unreachable markers
+        for (int i = 0; i < rows; i++) for (int j = 0; j < cols; j++) if (dist[i][j] == Integer.MAX_VALUE) dist[i][j] = -1;
+        return dist;
     }
 
     private String createStateKey(State state) {
@@ -236,80 +246,181 @@ public class SokoBot {
 
     public List<State> getPossibleMoves(State currentState) {
         List<State> nextStates = new ArrayList<>();
+        int[][] parentDir = computeReachableParents(currentState.getPlayerCoordinates(), currentState.getCrateCoordinates());
+        if (parentDir == null) {
+            return nextStates;
+        }
+
+        int rows = mapData.length;
+        int cols = mapData[0].length;
+        int[] dx = {-1, 1, 0, 0};
+        int[] dy = {0, 0, -1, 1};
+        char[] moveChars = {'u', 'd', 'l', 'r'};
+
+        HashSet<String> crateSet = new HashSet<>();
+        for (int[] crate : currentState.getCrateCoordinates()) {
+            crateSet.add(crate[0] + "," + crate[1]);
+        }
+
+        for (int[] crate : currentState.getCrateCoordinates()) {
+            int crateX = crate[0];
+            int crateY = crate[1];
+
+            for (int i = 0; i < 4; i++) {
+                int playerPushX = crateX - dx[i];
+                int playerPushY = crateY - dy[i];
+                int newCrateX = crateX + dx[i];
+                int newCrateY = crateY + dy[i];
+
+                if (playerPushX < 0 || playerPushX >= rows
+                        || playerPushY < 0 || playerPushY >= cols
+                        || newCrateX < 0 || newCrateX >= rows
+                        || newCrateY < 0 || newCrateY >= cols) {
+                    continue;
+                }
+
+                if (parentDir[playerPushX][playerPushY] == -1) {
+                    continue;
+                }
+
+                if (mapData[newCrateX][newCrateY] == '#' || crateSet.contains(newCrateX + "," + newCrateY)) {
+                    continue;
+                }
+
+                String pathToPush = buildPathFromParents(parentDir, currentState.getPlayerCoordinates(), playerPushX, playerPushY, dx, dy, moveChars);
+                String moveSequence = pathToPush + moveChars[i];
+
+                ArrayList<int[]> newCrates = new ArrayList<>();
+                for (int[] existingCrate : currentState.getCrateCoordinates()) {
+                    if (existingCrate[0] == crateX && existingCrate[1] == crateY) {
+                        newCrates.add(new int[]{newCrateX, newCrateY});
+                    } else {
+                        newCrates.add(new int[]{existingCrate[0], existingCrate[1]});
+                    }
+                }
+
+                int newGCost = currentState.getPathCost() + moveSequence.length();
+                int newHCost = computeHeuristic(newCrates, goalPositions);
+                int[] newPlayerPos = new int[]{crateX, crateY};
+                State nextState = new State(newPlayerPos, newCrates, newGCost, newHCost, currentState, moveSequence, mapData, itemsData);
+
+                nextStates.add(nextState);
+            }
+        }
+
+        return nextStates;
+    }
+
+    private String buildPathFromParents(int[][] parentDir, int[] start, int tx, int ty, int[] dx, int[] dy, char[] moveChars) {
+        StringBuilder sb = new StringBuilder();
+        int cx = tx;
+        int cy = ty;
+        while (!(cx == start[0] && cy == start[1])) {
+            int dir = parentDir[cx][cy];
+            if (dir < 0) { // unreachable
+                return "";
+            }
+            sb.insert(0, moveChars[dir]);
+            cx -= dx[dir];
+            cy -= dy[dir];
+        }
+        return sb.toString();
+    }
+
+    private int[][] computeReachableParents(int[] start, ArrayList<int[]> crates) {
+        int rows = mapData.length;
+        int cols = mapData[0].length;
+        int[][] parentDir = new int[rows][cols];
+        boolean[][] visited = new boolean[rows][cols];
+        boolean[][] crateBlocked = new boolean[rows][cols];
+
+        for (int i = 0; i < rows; i++) {
+            for (int j = 0; j < cols; j++) {
+                parentDir[i][j] = -1; // -1 = unreachable/unvisited
+            }
+        }
+
+        for (int[] crate : crates) {
+            crateBlocked[crate[0]][crate[1]] = true;
+        }
+
+        Queue<int[]> queue = new LinkedList<>();
+        queue.add(start);
+        visited[start[0]][start[1]] = true;
+        parentDir[start[0]][start[1]] = -2; // start marker
 
         int[] dx = {-1, 1, 0, 0};
         int[] dy = {0, 0, -1, 1};
 
-        int[] playerPos = currentState.getPlayerCoordinates();
-        int playerX = playerPos[0];
-        int playerY = playerPos[1];
+        while (!queue.isEmpty()) {
+            int[] current = queue.poll();
 
-        for (int i = 0; i < 4; i++) {
-            int newPlayerX = playerX + dx[i];
-            int newPlayerY = playerY + dy[i];
+            for (int i = 0; i < 4; i++) {
+                int nextX = current[0] + dx[i];
+                int nextY = current[1] + dy[i];
 
-            // check boundaries
-            if (newPlayerX < 0 || newPlayerX >= mapData.length
-                    || newPlayerY < 0 || newPlayerY >= mapData[0].length) {
-                continue;
+                if (nextX < 0 || nextX >= rows
+                        || nextY < 0 || nextY >= cols
+                        || visited[nextX][nextY]
+                        || mapData[nextX][nextY] == '#'
+                        || crateBlocked[nextX][nextY]) {
+                    continue;
+                }
+
+                visited[nextX][nextY] = true;
+                parentDir[nextX][nextY] = i; // reached by move i from parent
+                queue.add(new int[]{nextX, nextY});
+            }
+        }
+
+        return parentDir;
+    }
+
+        private void computeDeadSquares() {
+            int rows = mapData.length;
+            int cols = mapData[0].length;
+            deadSquares = new boolean[rows][cols];
+
+            // reverse BFS from goals: mark positions from which a box CAN reach a goal
+            boolean[][] reachable = new boolean[rows][cols];
+            Queue<int[]> q = new LinkedList<>();
+            for (int[] g : goalPositions) {
+                reachable[g[0]][g[1]] = true;
+                q.add(new int[]{g[0], g[1]});
             }
 
-            // checks if there's a wall, skip if yes
-            if (mapData[newPlayerX][newPlayerY] == '#') {
-                continue;
-            }
+            int[] dx = {-1, 1, 0, 0};
+            int[] dy = {0, 0, -1, 1};
 
-            boolean invalidMove = false;
-            ArrayList<int[]> newCrates = new ArrayList<>();
+            while (!q.isEmpty()) {
+                int[] cur = q.poll();
+                int cx = cur[0];
+                int cy = cur[1];
 
-            // crate movement
-            for (int[] crate : currentState.getCrateCoordinates()) {
-                int crateX = crate[0];
-                int crateY = crate[1];
+                for (int d = 0; d < 4; d++) {
+                    int prevX = cx - dx[d];
+                    int prevY = cy - dy[d];
+                    int playerX = cx - 2 * dx[d];
+                    int playerY = cy - 2 * dy[d];
 
-                // if player tries to push a crate
-                if (newPlayerX == crateX && newPlayerY == crateY) {
-                    int newCrateX = crateX + dx[i];
-                    int newCrateY = crateY + dy[i];
+                    if (prevX < 0 || prevX >= rows || prevY < 0 || prevY >= cols) continue;
+                    if (playerX < 0 || playerX >= rows || playerY < 0 || playerY >= cols) continue;
+                    if (mapData[prevX][prevY] == '#') continue;
+                    if (mapData[playerX][playerY] == '#') continue;
+                    if (reachable[prevX][prevY]) continue;
 
-                    // check the boundaries before accessing
-                    if (newCrateX < 0 || newCrateX >= mapData.length
-                            || newCrateY < 0 || newCrateY >= mapData[0].length) {
-                        invalidMove = true;
-                    }// if invalid push (wall/another crate)
-                    else if (mapData[newCrateX][newCrateY] == '#'
-                            || containsCrate(currentState.getCrateCoordinates(), newCrateX, newCrateY)) {
-                        invalidMove = true;
-                    }
-
-                    if (invalidMove) {
-                        break;
-                    }
-
-                    // if valid push
-                    newCrates.add(new int[]{newCrateX, newCrateY});
-                } else {
-                    newCrates.add(new int[]{crateX, crateY});
+                    reachable[prevX][prevY] = true;
+                    q.add(new int[]{prevX, prevY});
                 }
             }
 
-            if (invalidMove) {
-                continue;
+            // deadSquares = floor AND not reachable AND not goal
+            for (int i = 0; i < rows; i++) {
+                for (int j = 0; j < cols; j++) {
+                    deadSquares[i][j] = (mapData[i][j] != '#') && !reachable[i][j] && !goalSet.contains(i + "," + j);
+                }
             }
-            // recompute heuristic
-            int newGCost = currentState.getPathCost() + 1;
-            int newHCost = computeHeuristic(newCrates, goalPositions);
-
-            // create new state
-            int[] newPlayerPos = new int[]{newPlayerX, newPlayerY};
-            State nextState = new State(newPlayerPos, newCrates, newGCost, newHCost, currentState, mapData, itemsData);
-
-            nextStates.add(nextState);
         }
-
-        nextStates.sort(Comparator.comparingInt(State::getHeuristicCost));
-        return nextStates;
-    }
 
     private boolean containsCrate(ArrayList<int[]> crates, int x, int y) {
         for (int[] crate : crates) {
@@ -337,6 +448,11 @@ public class SokoBot {
             if (goalSet.contains(x + "," + y)) {
                 continue;
             }
+
+                // dead square check: if crate on a square that can never reach any goal
+                if (deadSquares != null && deadSquares[x][y]) {
+                    return true;
+                }
 
             boolean wallUp = (x == 0) || mapData[x - 1][y] == '#';
             boolean wallDown = (x == mapData.length - 1) || mapData[x + 1][y] == '#';
@@ -371,7 +487,6 @@ public class SokoBot {
             return ""; // no solution
         }
 
-        // kukunin lahat ng states from goal to start
         List<State> path = new ArrayList<>();
         State current = goalState;
 
@@ -380,35 +495,22 @@ public class SokoBot {
             current = current.getPreviousState();
         }
 
-        String moves = "";
+        Collections.reverse(path);
+        StringBuilder moves = new StringBuilder();
 
-        // babalikan yung path from start to goal
-        for (int i = path.size() - 2; i >= 0; i--) {
-            State from = path.get(i + 1);  // last state
-            State to = path.get(i);        // next state
-
-            int[] fromPos = from.getPlayerCoordinates();
-            int[] toPos = to.getPlayerCoordinates();
-
-            int deltaX = toPos[0] - fromPos[0];
-            int deltaY = toPos[1] - fromPos[1];
-
-            // add move 
-            if (deltaX == -1 && deltaY == 0) {
-                moves = moves + 'u';  // Up
-            } else if (deltaX == 1 && deltaY == 0) {
-                moves = moves + 'd';  // Down
-            } else if (deltaX == 0 && deltaY == -1) {
-                moves = moves + 'l';  // Left
-            } else if (deltaX == 0 && deltaY == 1) {
-                moves = moves + 'r';  // Right
+        for (int i = 1; i < path.size(); i++) {
+            String sequence = path.get(i).getMoveSequence();
+            if (sequence != null) {
+                moves.append(sequence);
             }
         }
 
-        return moves;
+        return moves.toString();
     }
     private HashSet<String> goalSet;
     private char[][] mapData;
     private char[][] itemsData;
     private ArrayList<int[]> goalPositions;
+    private boolean[][] deadSquares;
+    private List<int[][]> goalDistanceMaps;
 }
